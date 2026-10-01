@@ -1,0 +1,15 @@
+/usr/sbin/zlinfo-gui
+/usr/sbin/zlinux-report
+/usr/sbin/rfs-util
+/usr/sbin/zlinux-health
+/usr/sbin/zlinux-update
+/usr/sbin/zlinux-audit
+/usr/lib/ZedLinux/checks/10-platform.sh
+/usr/lib/ZedLinux/checks/20-capacity.sh
+/usr/lib/ZedLinux/checks/30-services.sh
+/usr/lib/ZedLinux/checks/40-network.sh
+/usr/lib/ZedLinux/checks/50-security.sh
+/usr/lib/ZedLinux/bin/zlinux-version
+/usr/lib/ZedLinux/bin/zlinux-legal
+/usr/lib/ZedLinux/bin/d
+/etc/profile.d/zedlinux.sh

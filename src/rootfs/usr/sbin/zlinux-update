@@ -1,0 +1,100 @@
+#!/bin/bash
+#
+# ZedLinux-update - refresh installed packages and (optionally) re-apply the
+# ZedLinux rootfs overlay from an extracted installer bundle.
+#
+# Usage:
+#   ZedLinux-update [--check] [--from <dir>] [-y|--yes]
+#
+#   --check        Only report whether package updates are available; makes no changes.
+#   --from <dir>   Re-apply the rootfs overlay from an extracted ZedLinux
+#                  installer bundle (a directory containing rootfs/ and chmod_x.lst).
+#   -y, --yes      Do not prompt before upgrading packages.
+#
+set -euo pipefail
+
+LOG_FILE="/var/log/ZedLinux-update.log"
+CHECK_ONLY="no"
+ASSUME_YES="no"
+FROM_DIR=""
+
+log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+usage() {
+    grep '^#' "$0" | sed -n '2,/^set -euo/p' | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
+require_root() {
+    [[ "$(id -u)" -eq 0 ]] || die "must be run as root (try sudo)."
+}
+
+apply_overlay() {
+    local dir="$1"
+    [[ -d "$dir/rootfs" ]] || die "'$dir' does not look like a ZedLinux installer bundle (no rootfs/ found)"
+
+    log "applying rootfs overlay from $dir"
+    rsync -avh --progress "$dir/rootfs/" / | tee -a "$LOG_FILE"
+
+    if [[ -f "$dir/chmod_x.lst" ]]; then
+        while IFS= read -r file; do
+            [[ -n "$file" && -f "$file" ]] || continue
+            log "chmod +x: $file"
+            chmod +x "$file"
+        done < "$dir/chmod_x.lst"
+    fi
+}
+
+main() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --check) CHECK_ONLY="yes" ;;
+            --from) FROM_DIR="${2:-}"; shift ;;
+            --from=*) FROM_DIR="${1#*=}" ;;
+            -y|--yes) ASSUME_YES="yes" ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "unknown option '$1' (--help for usage)" ;;
+        esac
+        shift
+    done
+
+    require_root
+    touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/ZedLinux-update.log"
+
+    log "checking for package updates."
+    apt-get update
+
+    local upgradable count
+    upgradable="$(apt list --upgradable 2>/dev/null | tail -n +2)"
+    count="$(printf '%s\n' "$upgradable" | grep -c . || true)"
+
+    if [[ "$CHECK_ONLY" == "yes" ]]; then
+        if [[ "$count" -eq 0 ]]; then
+            log "system is up to date."
+            exit 0
+        fi
+        log "${count} package(s) can be upgraded:"
+        printf '%s\n' "$upgradable" | tee -a "$LOG_FILE"
+        exit 1
+    fi
+
+    if [[ "$count" -eq 0 ]]; then
+        log "no package updates available."
+    else
+        log "${count} package(s) will be upgraded."
+        if [[ "$ASSUME_YES" != "yes" ]]; then
+            local reply
+            read -r -p "Proceed with upgrade? [y/N]: " reply
+            [[ "${reply,,}" == y* ]] || die "aborted by user."
+        fi
+        apt-get upgrade -y
+    fi
+
+    if [[ -n "$FROM_DIR" ]]; then
+        apply_overlay "$FROM_DIR"
+    fi
+
+    log "update complete."
+}
+
+main "$@"

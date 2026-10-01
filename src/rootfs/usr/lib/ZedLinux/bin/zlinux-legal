@@ -1,0 +1,24 @@
+#!/bin/bash
+#
+# zlinux-legal - print the ZedLinux legal notice
+#
+# Usage:
+#   zlinux-legal [--full|--license|--no-pager]
+#
+set -euo pipefail
+
+SHORT="/usr/share/ZedLinux/LEGAL-SMALL.txt"
+FULL="/usr/share/ZedLinux/LEGAL.txt"
+LICENSE="/usr/share/ZedLinux/LICENSE.txt"
+
+if [[ "${1:-}" == "--full" ]]; then
+    cat "$FULL"
+elif [[ "${1:-}" == "--license" ]]; then
+    if [[ "${2:-}" == "--no-pager" ]]; then
+        cat "$LICENSE"
+    else
+        less "$LICENSE"
+    fi
+else
+    cat "$SHORT"
+fi

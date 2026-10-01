@@ -1,0 +1,8 @@
+(C) 4248 Systems, a part of 0x4248. GNU GPL v3
+
+The ZedLinux Enterprise Edition 2026, Debian and Linux Kernel are open source software that
+permits redistribution and modification under the terms of the GNU General Public License 
+(GPL) version 3 and other open source licenses. By using ZedLinux, you agree to comply with 
+the terms of the GPL and any other applicable licenses.
+
+Linux is a registered trademark in the United States and other countries.

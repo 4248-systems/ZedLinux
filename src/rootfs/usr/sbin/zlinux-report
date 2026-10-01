@@ -1,0 +1,42 @@
+#!/bin/bash
+
+echo -n "Please wait while the report is being generated"
+report_file="ZLinux_Report_$(uname -n)_$(date +%Y%m%d_%H%M%S).txt"
+
+echo "ZedLinux Report - $(date)" > "$report_file"
+echo "Hostname: $(uname -n)" >> "$report_file"
+echo "Operating System: $(uname -o)" >> "$report_file"
+echo "Kernel Version: $(uname -r)" >> "$report_file"
+echo "CPU Information:" >> "$report_file"
+lscpu >> "$report_file"
+echo "" >> "$report_file"
+echo "Memory Information:" >> "$report_file"
+free -h >> "$report_file"
+echo "" >> "$report_file"
+echo "Storage Information:" >> "$report_file"
+lsblk >> "$report_file"
+echo "" >> "$report_file"
+echo "Network Interfaces:" >> "$report_file"
+ip addr show >> "$report_file"
+echo "" >> "$report_file"
+
+echo -n "."
+
+echo "Installed Packages:" >> "$report_file"
+dpkg-query -W -f='${binary:Package} ${Version}\n' | sort >> "$report_file"
+
+echo -n "."
+
+echo "" >> "$report_file"
+echo "Kernel log refering to errors:" >> "$report_file"
+dmesg | grep -i "err" >> "$report_file"
+echo "" >> "$report_file"
+echo "Kernel log refering to warnings:" >> "$report_file"
+dmesg | grep -i "warn" >> "$report_file"
+
+echo -n "."
+
+echo "" >> "$report_file"
+echo -e "\r"
+cat "$report_file"
+echo -e "\nReport saved to $report_file"

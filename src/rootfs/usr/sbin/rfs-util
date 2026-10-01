@@ -1,0 +1,140 @@
+#!/bin/bash
+set -euo pipefail
+
+RFS_ROOT="${RFS_ROOT:-/mnt/rfs}"
+REGISTRY="$RFS_ROOT/.rfs-registry"
+
+log() { printf '[rfs] %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+need_root() {
+    [[ "$(id -u)" -eq 0 ]] || die "this operation requires root (try sudo)"
+}
+
+ensure_root_dir() {
+    mkdir -p "$RFS_ROOT"
+    touch "$REGISTRY"
+}
+
+valid_name() {
+    [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid partition name '$1' (use letters, digits, - and _ only)"
+}
+
+valid_size() {
+    [[ "$1" =~ ^[0-9]+[KMG]$ ]] || die "invalid size '$1' (expected a number followed by K, M, or G, e.g. 512M or 2G)"
+}
+
+mountpoint_for() { printf '%s/%s' "$RFS_ROOT" "$1"; }
+
+is_mounted() {
+    mountpoint -q "$(mountpoint_for "$1")" 2>/dev/null
+}
+
+cmd_create() {
+    need_root
+    ensure_root_dir
+    local name="$1" size="$2" mode="${3:-1777}"
+    [[ -n "${name:-}" && -n "${size:-}" ]] || die "usage: create <name> <size> [mode]"
+    valid_name "$name"
+    valid_size "$size"
+    local mp; mp="$(mountpoint_for "$name")"
+
+    if is_mounted "$name"; then
+        die "partition '$name' already mounted at $mp"
+    fi
+
+    mkdir -p "$mp"
+    mount -t tmpfs -o "size=${size},mode=${mode}" "rfs-${name}" "$mp"
+    grep -q "^${name}|" "$REGISTRY" 2>/dev/null && sed -i "/^${name}|/d" "$REGISTRY"
+    printf '%s|%s|%s\n' "$name" "$size" "$mode" >> "$REGISTRY"
+
+    log "created RFS partition '${name}' -> ${mp} (size=${size}, mode=${mode})"
+}
+
+cmd_resize() {
+    need_root
+    ensure_root_dir
+    local name="$1" size="$2"
+    [[ -n "${name:-}" && -n "${size:-}" ]] || die "usage: resize <name> <new_size>"
+    valid_name "$name"
+    valid_size "$size"
+    is_mounted "$name" || die "partition '$name' is not currently mounted"
+    local mp; mp="$(mountpoint_for "$name")"
+
+    mount -o "remount,size=${size}" "$mp"
+
+    local mode
+    mode="$(awk -F'|' -v n="$name" '$1==n{print $3}' "$REGISTRY")"
+    sed -i "/^${name}|/d" "$REGISTRY"
+    printf '%s|%s|%s\n' "$name" "$size" "${mode:-1777}" >> "$REGISTRY"
+
+    log "resized RFS partition '${name}' to ${size}"
+}
+
+cmd_remove() {
+    need_root
+    ensure_root_dir
+    local name="$1"
+    [[ -n "${name:-}" ]] || die "usage: remove <name>"
+    valid_name "$name"
+    local mp; mp="$(mountpoint_for "$name")"
+
+    if is_mounted "$name"; then
+        umount "$mp" || die "failed to unmount ${mp} (files still open?)"
+    fi
+    rmdir "$mp" 2>/dev/null || true
+    sed -i "/^${name}|/d" "$REGISTRY" 2>/dev/null || true
+
+    log "removed RFS partition '${name}'"
+}
+
+cmd_list() {
+    ensure_root_dir
+    printf '%-16s %-10s %-6s %-10s %s\n' "NAME" "SIZE" "MODE" "STATE" "MOUNTPOINT"
+    if [[ ! -s "$REGISTRY" ]]; then
+        log "no RFS partitions registered under $RFS_ROOT"
+        return 0
+    fi
+    while IFS='|' read -r name size mode; do
+        [[ -n "$name" ]] || continue
+        local mp state
+        mp="$(mountpoint_for "$name")"
+        if is_mounted "$name"; then state="mounted"; else state="unmounted"; fi
+        printf '%-16s %-10s %-6s %-10s %s\n' "$name" "$size" "$mode" "$state" "$mp"
+    done < "$REGISTRY"
+}
+
+cmd_status() {
+    ensure_root_dir
+    local name="$1"
+    [[ -n "${name:-}" ]] || die "usage: status <name>"
+    valid_name "$name"
+    local mp; mp="$(mountpoint_for "$name")"
+
+    if ! is_mounted "$name"; then
+        log "partition '$name' is not mounted"
+        return 1
+    fi
+    df -h "$mp"
+}
+
+usage() {
+    grep '^#   ' "$0" | sed 's/^# //'
+}
+
+main() {
+    local sub="${1:-}"
+    [[ -n "$sub" ]] || { usage; exit 1; }
+    shift || true
+    case "$sub" in
+        create)  cmd_create "$@" ;;
+        resize)  cmd_resize "$@" ;;
+        remove)  cmd_remove "$@" ;;
+        list)    cmd_list ;;
+        status)  cmd_status "$@" ;;
+        -h|--help|help) usage ;;
+        *) die "unknown subcommand '$sub' (--help for usage)" ;;
+    esac
+}
+
+main "$@"

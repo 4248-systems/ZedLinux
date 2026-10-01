@@ -1,0 +1,65 @@
+#!/usr/bin/python3
+
+import sys
+import tkinter as tk
+from tkinter import ttk
+import subprocess
+
+release_conf_path = "/etc/ZedLinux/release.conf"
+legal_file_path = "/usr/share/ZedLinux/LEGAL-SMALL.txt"
+
+def load_release_conf(path):
+    conf = {}
+    with open(path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                conf[key] = value.strip('"')
+    return type('ReleaseConf', (), conf)()
+
+def load_legal_file(path):
+    with open(path, 'r') as f:
+        return f.read()
+
+def get_info():
+    info = "4248 Systems ZedLinux Server\n"
+    info += subprocess.getoutput("uname -s") + " "
+    info += subprocess.getoutput("uname -r") + " "
+    info += subprocess.getoutput("uname -m") + "\n"
+
+
+    return info
+
+
+release_conf = load_release_conf(release_conf_path)
+
+root = tk.Tk()
+
+root.title("ZedLinux Info")
+
+label = tk.Label(root, text=f"{release_conf.FULLNAME}", font=("Helvetica", 16, "bold"))
+label.pack(pady=20)
+# add hr
+hr = ttk.Separator(root, orient='horizontal')
+hr.pack(fill='x', padx=20, pady=10)
+
+info_label = tk.Label(
+    root,
+    text=get_info(),
+    font=("Helvetica", 11),
+    justify=tk.LEFT,
+    anchor=tk.NW,
+)
+info_label.pack(padx=20, pady=20, fill=tk.BOTH, expand=True)
+
+legal_text = load_legal_file(legal_file_path)
+legal_label = tk.Label(
+    root,
+    text=legal_text,
+    font=("Helvetica", 9),
+    justify=tk.LEFT,
+    anchor=tk.NW,
+)
+legal_label.pack(padx=20, pady=20, fill=tk.BOTH, expand=True)
+root.mainloop()

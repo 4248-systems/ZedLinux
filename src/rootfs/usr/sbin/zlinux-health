@@ -1,0 +1,122 @@
+#!/bin/bash
+#
+# ZedLinux-health - quick system health/diagnostics check for ZedLinux
+#
+# Usage:
+#   ZedLinux-health [-q|--quiet]
+#
+# Exit codes:
+#   0  all checks passed
+#   1  one or more warnings
+#   2  one or more critical failures
+#
+
+set -euo pipefail
+
+QUIET="no"
+STATUS=0
+
+usage() {
+    grep '^#' "$0" | sed -n '2,/^set -euo/p' | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
+note_status() {
+    local level="$1"
+    [[ "$level" == "WARN" && "$STATUS" -lt 1 ]] && STATUS=1
+    [[ "$level" == "CRIT" && "$STATUS" -lt 2 ]] && STATUS=2
+    return 0
+}
+
+report() {
+    local level="$1" label="$2" detail="$3"
+    note_status "$level"
+    [[ "$QUIET" == "yes" && "$level" == "OK" ]] && return 0
+    printf '%-5s %-24s %s\n' "$level" "$label" "$detail"
+}
+
+check_load() {
+    local cores load1 ratio
+    cores="$(nproc)"
+    load1="$(awk '{print $1}' /proc/loadavg)"
+    ratio="$(awk -v l="$load1" -v c="$cores" 'BEGIN{printf "%.2f", l/c}')"
+    if awk -v r="$ratio" 'BEGIN{exit !(r>1.5)}'; then
+        report CRIT "CPU load" "1m load ${load1} across ${cores} core(s) (ratio ${ratio})"
+    elif awk -v r="$ratio" 'BEGIN{exit !(r>0.9)}'; then
+        report WARN "CPU load" "1m load ${load1} across ${cores} core(s) (ratio ${ratio})"
+    else
+        report OK "CPU load" "1m load ${load1} across ${cores} core(s)"
+    fi
+}
+
+check_memory() {
+    local pct
+    pct="$(free | awk '/^Mem:/{printf "%.0f", ($2-$7)/$2*100}')"
+    if (( pct >= 95 )); then
+        report CRIT "Memory usage" "${pct}% used"
+    elif (( pct >= 85 )); then
+        report WARN "Memory usage" "${pct}% used"
+    else
+        report OK "Memory usage" "${pct}% used"
+    fi
+}
+
+check_disks() {
+    local use mount
+    while read -r use mount; do
+        use="${use%\%}"
+        if (( use >= 95 )); then
+            report CRIT "Disk ${mount}" "${use}% used"
+        elif (( use >= 85 )); then
+            report WARN "Disk ${mount}" "${use}% used"
+        else
+            report OK "Disk ${mount}" "${use}% used"
+        fi
+    done < <(df -hP -x tmpfs -x devtmpfs -x squashfs | awk 'NR>1{print $5, $6}')
+}
+
+check_services() {
+    local failed
+    failed="$(systemctl --failed --no-legend 2>/dev/null | wc -l)"
+    if (( failed > 0 )); then
+        report WARN "systemd units" "${failed} failed unit(s) - see 'systemctl --failed'"
+    else
+        report OK "systemd units" "no failed units"
+    fi
+}
+
+check_firewall() {
+    command -v ufw &>/dev/null || return 0
+    if ufw status 2>/dev/null | grep -q "^Status: active"; then
+        report OK "Firewall (ufw)" "active"
+    else
+        report WARN "Firewall (ufw)" "inactive"
+    fi
+}
+
+check_network() {
+    local up_count
+    up_count="$(ip -o link show up 2>/dev/null | grep -vc 'LOOPBACK' || true)"
+    if (( up_count == 0 )); then
+        report WARN "Network interfaces" "no non-loopback interfaces are up"
+    else
+        report OK "Network interfaces" "${up_count} interface(s) up"
+    fi
+}
+
+main() {
+    case "${1:-}" in
+        -h|--help) usage; exit 0 ;;
+        -q|--quiet) QUIET="yes" ;;
+    esac
+
+    check_load
+    check_memory
+    check_disks
+    check_services
+    check_firewall
+    check_network
+
+    exit "$STATUS"
+}
+
+main "$@"

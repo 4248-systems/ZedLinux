@@ -1,0 +1,13 @@
+#!/bin/bash
+#
+# ZedLinux managed shell configuration, sourced for every bash instance
+# (login and non-login) via /etc/profile.d/zedlinux.sh and /etc/bash.bashrc.
+# Per-user tweaks belong in ~/.bashrc instead.
+
+# Make ZedLinux's globally usable scripts available to every user.
+export PATH="/usr/lib/ZedLinux/bin:$PATH"
+
+alias ll='ls -alhF'
+alias la='ls -AhF'
+alias fastfetch='fastfetch --logo linux'
+export PS1='[Z/L \h] \u \w\$ '

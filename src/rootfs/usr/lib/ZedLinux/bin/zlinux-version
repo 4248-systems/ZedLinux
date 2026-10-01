@@ -1,0 +1,16 @@
+#!/bin/bash
+
+set -euo pipefail
+
+RELEASE_CONF="/etc/ZedLinux/release.conf"
+
+field() {
+    sed -n "s/^$1=\"\\(.*\\)\"\$/\\1/p" "$RELEASE_CONF"
+}
+
+[[ -r "$RELEASE_CONF" ]] || { echo "zlinux-version: $RELEASE_CONF not found" >&2; exit 1; }
+
+printf '%s (%s)\n' "$(field FULLNAME)" "$(field CODENAME)"
+printf 'Version: %s\n' "$(field VERSION)"
+printf 'Type:    %s\n' "$(field TYPE)"
+printf 'Built:   %s\n' "$(field BUILD_DATE)"

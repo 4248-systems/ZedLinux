@@ -1,0 +1,66 @@
+#!/bin/bash
+#
+# ZedLinux-audit - run the ordered ZedLinux intensive health checklist.
+#
+# Usage:
+#   ZedLinux-audit [--list] [--quiet]
+#
+# Checks are executed lexically from /usr/lib/ZedLinux/checks as NN-name.sh.
+# Exit code 0 means all checks passed; 1 means warnings or failed checks.
+#
+set -uo pipefail
+
+CHECK_DIR="/usr/lib/ZedLinux/checks"
+LIST_ONLY="no"
+QUIET="no"
+FAILED=0
+
+usage() {
+    grep '^#' "$0" | sed -n '2,/^set -uo/p' | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
+main() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --list) LIST_ONLY="yes" ;;
+            --quiet|-q) QUIET="yes" ;;
+            -h|--help) usage; exit 0 ;;
+            *) printf 'ZedLinux-audit: unknown option: %s\n' "$1" >&2; exit 2 ;;
+        esac
+        shift
+    done
+
+    [[ -d "$CHECK_DIR" ]] || { printf 'ZedLinux-audit: check directory not found: %s\n' "$CHECK_DIR" >&2; exit 2; }
+
+    local checks=()
+    mapfile -t checks < <(find "$CHECK_DIR" -maxdepth 1 -type f -name '[0-9][0-9]-*.sh' -printf '%f\n' | LC_ALL=C sort)
+    ((${#checks[@]})) || { printf 'ZedLinux-audit: no checks found in %s\n' "$CHECK_DIR" >&2; exit 2; }
+
+    if [[ "$LIST_ONLY" == "yes" ]]; then
+        printf '%s\n' "${checks[@]}"
+        exit 0
+    fi
+
+    printf 'ZedLinux intensive health audit\n'
+    printf 'System: %s | Started: %s\n\n' "$(hostname)" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+
+    local check
+    for check in "${checks[@]}"; do
+        printf '[ RUN ] %s\n' "$check"
+        if "$CHECK_DIR/$check"; then
+            [[ "$QUIET" == "yes" ]] || printf '[  OK ] %s\n\n' "$check"
+        else
+            printf '[FAIL ] %s\n\n' "$check" >&2
+            FAILED=1
+        fi
+    done
+
+    if (( FAILED )); then
+        printf 'Audit completed with findings.\n' >&2
+    else
+        printf 'Audit completed successfully.\n'
+    fi
+    exit "$FAILED"
+}
+
+main "$@"

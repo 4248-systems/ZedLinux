@@ -1,0 +1,14 @@
+ZedLinux Terms and Legal Information
+-----------------------------------
+
+ZedLinux COMES WITHOUT ANY WARRANTY, LIABILITY, OR GUARANTEE OF ANY KIND. USE AT YOUR OWN 
+RISK. ZedLinux IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT ANY EXPRESS OR IMPLIED 
+WARRANTIES, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY, 
+FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+ZedLinux is a free and open-source software that can be redistributed and modified under 
+the terms of the GNU General Public License (GPL) version 3 or later. By using ZedLinux, 
+you agree to comply with the terms of the GPL and any other applicable licenses.
+
+Copyright (C) 2026 4248 Systems, a part of 0x4248. GNU GPL v3
+

@@ -1,0 +1,82 @@
+#!/bin/bash
+
+DIR=$(pwd)
+
+
+LIST_PROGS=false
+
+for arg in "$@"; do
+    case "$arg" in
+        -x) LIST_PROGS=true ;;
+        *) DIR="$arg" ;;
+    esac
+done
+
+echo -e "\e[47m\e[30m00 DIRECTORY CONTENTS OF $DIR\e[0m"
+
+
+human_size() {
+    local bytes=$1
+    if [ "$bytes" == "-" ]; then
+        echo "-"
+        return
+    fi
+    local units=("B" "K" "M" "G" "T")
+    local unit_index=0
+    local size=$bytes
+    while [ "$size" -ge 1024 ] && [ $unit_index -lt 4 ]; do
+        size=$((size / 1024))
+        unit_index=$((unit_index + 1))
+    done
+    echo "${size}${units[$unit_index]}"
+}
+
+
+NUM=1
+while IFS= read -r entry; do
+    if [ "$LIST_PROGS" = true ] && [ ! -x "$DIR/$entry" ]; then
+        continue
+    fi
+
+
+    if [ -d "$DIR/$entry" ]; then
+        TYPE="DIR"
+        EXT="-"
+        SIZE="-"
+    elif [ -x "$DIR/$entry" ]; then
+        TYPE="PRG"
+
+        if [[ "$entry" == .* ]]; then
+            EXT="-"
+        else
+            EXT="${entry##*.}"
+            [ "$EXT" == "$entry" ] && EXT="-"
+        fi
+        SIZE=$(stat -c%s "$DIR/$entry")
+    else
+        TYPE="FILE"
+        if [[ "$entry" == .* ]]; then
+            EXT="-"
+        else
+            EXT="${entry##*.}"
+            [ ${#EXT} -gt 5 ] && EXT="${EXT:0:5}"
+            [ "$EXT" == "$entry" ] && EXT="-"
+        fi
+        SIZE=$(stat -c%s "$DIR/$entry")
+    fi
+
+    FNAME=$(basename "$entry")
+    [ ${#FNAME} -gt 20 ] && FNAME="${FNAME:0:20}"
+
+    FNAME_SPACES=$((22 - ${#FNAME}))
+    [ $FNAME_SPACES -lt 2 ] && FNAME_SPACES=2
+    SPACES=$(printf '%*s' "$FNAME_SPACES")
+
+    HSIZE=$(human_size "$SIZE")
+
+    printf "%02d %s%s %-6s %-8s %s\n" "$NUM" "$FNAME" "$SPACES" "$EXT" "$TYPE" "$HSIZE"
+    NUM=$((NUM + 1))
+done < <(ls -A "$DIR")
+
+TOTAL=$((NUM - 1))
+echo -e "\e[47m\e[30m$TOTAL ITEM(S) IN $DIR\e[0m"
