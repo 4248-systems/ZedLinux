@@ -185,7 +185,7 @@ install_base_packages() {
         htop btop iotop sysstat lsof strace ltrace \
         git vim nano tmux screen openssh-client openssh-server \
         build-essential python3 python3-pip \
-        fail2ban ufw \
+        fail2ban ufw task-spooler \ 
         arp-scan netdiscover masscan \
         speedtest-cli \
         jq unzip zip tree ncdu \

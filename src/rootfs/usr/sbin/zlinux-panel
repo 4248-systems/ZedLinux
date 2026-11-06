@@ -1,0 +1,434 @@
+#!/usr/bin/env python3
+"""A small, read-only remote management panel for ZedLinux."""
+
+import argparse
+import base64
+import binascii
+import hmac
+import html
+import logging
+import os
+import platform
+import shutil
+import socket
+import subprocess
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlsplit
+
+
+LOG = logging.getLogger("zlinux-panel")
+
+
+def readable_size(size):
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024 or unit == "TiB":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+
+
+def memory():
+    values = {}
+    with open("/proc/meminfo", encoding="ascii") as source:
+        for line in source:
+            name, _, value = line.partition(":")
+            if name in ("MemTotal", "MemAvailable"):
+                values[name] = int(value.split()[0]) * 1024
+    total, available = values["MemTotal"], values["MemAvailable"]
+    return f"{readable_size(total - available)} used / {readable_size(total)} total"
+
+
+def uptime():
+    with open("/proc/uptime", encoding="ascii") as source:
+        seconds = int(float(source.read().split()[0]))
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes = seconds // 60
+    return f"{days} days, {hours} hours, {minutes} minutes"
+
+
+def disk():
+    usage = shutil.disk_usage("/")
+    return f"{readable_size(usage.used)} used / {readable_size(usage.total)} total"
+
+
+def load():
+    return " / ".join(f"{value:.2f}" for value in os.getloadavg())
+
+
+def run_command(*args):
+    result = subprocess.run(args, capture_output=True, text=True, timeout=3, check=False)
+    if result.returncode:
+        detail = result.stderr.strip() or f"exit status {result.returncode}"
+        raise OSError(detail)
+    return result.stdout.strip()
+
+
+def os_name():
+    with open("/etc/os-release", encoding="utf-8") as source:
+        for line in source:
+            if line.startswith("PRETTY_NAME="):
+                return line.partition("=")[2].strip().strip('"')
+    return platform.system()
+
+
+def cpu_model():
+    with open("/proc/cpuinfo", encoding="ascii") as source:
+        for line in source:
+            name, separator, value = line.partition(":")
+            if separator and name.strip() in ("model name", "Hardware", "Processor"):
+                return value.strip()
+    return "Not reported"
+
+
+def memory_details():
+    values = {}
+    with open("/proc/meminfo", encoding="ascii") as source:
+        for line in source:
+            name, _, value = line.partition(":")
+            fields = value.split()
+            if name in ("MemTotal", "MemAvailable", "MemFree", "SwapTotal", "SwapFree", "Cached") and fields:
+                values[name] = int(fields[0]) * 1024
+    total = values["MemTotal"]
+    available = values.get("MemAvailable", values.get("MemFree", 0))
+    swap_total = values.get("SwapTotal", 0)
+    swap_free = values.get("SwapFree", 0)
+    return (
+        f"RAM: {readable_size(total - available)} used / {readable_size(total)} total; "
+        f"{readable_size(available)} available\n"
+        f"Cache: {readable_size(values.get('Cached', 0))}\n"
+        f"Swap: {readable_size(swap_total - swap_free)} used / {readable_size(swap_total)} total"
+    )
+
+
+def process_count():
+    with os.scandir("/proc") as entries:
+        return str(sum(entry.name.isdigit() for entry in entries))
+
+
+def boot_time():
+    with open("/proc/stat", encoding="ascii") as source:
+        for line in source:
+            if line.startswith("btime "):
+                return datetime.fromtimestamp(int(line.split()[1])).astimezone().isoformat(timespec="seconds")
+    raise ValueError("boot time is not reported")
+
+
+def cpu_quota():
+    path = "/sys/fs/cgroup/cpu.max"
+    if not os.path.exists(path):
+        return "No container CPU quota reported"
+    quota, period = open(path, encoding="ascii").read().split()[:2]
+    return "Unlimited" if quota == "max" else f"{int(quota) / int(period):.2f} CPU(s)"
+
+
+def memory_limit():
+    path = "/sys/fs/cgroup/memory.max"
+    if not os.path.exists(path):
+        return "No container memory limit reported"
+    limit = open(path, encoding="ascii").read().strip()
+    return "Unlimited" if limit == "max" else readable_size(int(limit))
+
+
+def container_oom_events():
+    path = "/sys/fs/cgroup/memory.events"
+    if not os.path.exists(path):
+        return "Container memory event counters are not available"
+    events = dict(
+        line.split() for line in open(path, encoding="ascii")
+        if len(line.split()) == 2
+    )
+    return f"OOM events: {events.get('oom', '0')}; OOM kills: {events.get('oom_kill', '0')}"
+
+
+def filesystems():
+    output = run_command("df", "-P", "-T", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs")
+    return "\n".join(output.splitlines()[:13])
+
+
+def network_interfaces():
+    return run_command("ip", "-brief", "address") or "No interfaces reported"
+
+
+def default_route():
+    return run_command("ip", "route", "show", "default") or "No default route configured"
+
+
+def dns_servers():
+    with open("/etc/resolv.conf", encoding="utf-8") as source:
+        servers = [
+            line.split()[1]
+            for line in source
+            if len(line.split()) > 1 and line.split()[0] == "nameserver"
+        ]
+    return "\n".join(servers) if servers else "No nameservers listed"
+
+
+def listening_sockets():
+    output = run_command("ss", "-lntup")
+    return "\n".join(output.splitlines()[:13]) or "No listening sockets reported"
+
+
+def systemd_state():
+    result = subprocess.run(
+        ("systemctl", "is-system-running"), capture_output=True, text=True, timeout=3, check=False
+    )
+    return (result.stdout or result.stderr).strip() or "State not reported"
+
+
+def failed_services():
+    output = run_command("systemctl", "--failed", "--no-legend", "--plain", "--no-pager")
+    return output or "None"
+
+
+def service_state(name):
+    result = subprocess.run(
+        ("systemctl", "is-active", name), capture_output=True, text=True, timeout=3, check=False
+    )
+    return (result.stdout or result.stderr).strip() or "State not reported"
+
+
+def firewall_status():
+    result = subprocess.run(("ufw", "status"), capture_output=True, text=True, timeout=3, check=False)
+    return (result.stdout or result.stderr).strip() or "Status not reported"
+
+
+def ssh_settings():
+    path = "/etc/ssh/sshd_config"
+    if not os.path.exists(path):
+        return "OpenSSH server configuration is not installed"
+    settings = {}
+    with open(path, encoding="utf-8", errors="replace") as source:
+        for line in source:
+            fields = line.split("#", 1)[0].split()
+            if len(fields) >= 2 and fields[0].lower() in (
+                "permitrootlogin", "passwordauthentication", "pubkeyauthentication", "port"
+            ):
+                settings[fields[0].lower()] = " ".join(fields[1:])
+    return "\n".join(f"{key}: {value}" for key, value in settings.items()) or "No selected settings in main config"
+
+
+def kernel_counters():
+    counters = {}
+    with open("/proc/vmstat", encoding="ascii") as source:
+        for line in source:
+            name, _, value = line.partition(" ")
+            if name in ("oom_kill", "pgmajfault", "pswpin", "pswpout"):
+                counters[name] = int(value)
+    return (
+        f"OOM kills: {counters.get('oom_kill', 0)}; "
+        f"major page faults: {counters.get('pgmajfault', 0):,}; "
+        f"swap-ins: {counters.get('pswpin', 0):,}; "
+        f"swap-outs: {counters.get('pswpout', 0):,}"
+    )
+
+
+def kernel_warnings():
+    output = run_command(
+        "journalctl", "--dmesg", "--boot", "--priority=warning",
+        "--no-pager", "--output=short-iso", "--lines=10",
+    )
+    return output or "No kernel warnings recorded for this boot"
+
+
+DEFAULT_LOGO = "https://thumb.wikimedia.org/wikipedia/commons/thumb/c/c7/Gnome-applications-utilities.svg/960px-Gnome-applications-utilities.svg.png"
+
+# Pages are (title, logo URL or None, metrics). Metrics are (label, function).
+PAGES = {
+    "/": ("Home", None, (
+        ("Hostname", socket.gethostname),
+        ("Operating system", os_name),
+        ("Uptime", uptime),
+        ("Load average (1 / 5 / 15 min)", load),
+        ("Memory", memory),
+        ("Root filesystem", disk),
+    )),
+    "/system": ("System Information", "https://thumb.wikimedia.org/wikipedia/commons/thumb/f/fc/Gnome-preferences-system.svg/960px-Gnome-preferences-system.svg.png", (
+        ("Operating system", os_name),
+        ("Hostname", socket.gethostname),
+        ("Kernel", platform.release),
+        ("Architecture", platform.machine),
+        ("CPU model", cpu_model),
+        ("Logical CPUs", lambda: str(os.cpu_count() or "Not reported")),
+        ("Boot time", boot_time),
+        ("Uptime", uptime),
+        ("Load average (1 / 5 / 15 min)", load),
+    )),
+    "/storage": ("Disk Configuration", "https://thumb.wikimedia.org/wikipedia/commons/thumb/1/15/Gnome-drive-harddisk.svg/960px-Gnome-drive-harddisk.svg.png", (
+        ("Root filesystem", disk),
+        ("Mounted filesystems", filesystems),
+    )),
+    "/performance": ("Performance", None, (
+        ("Load average (1 / 5 / 15 min)", load),
+        ("Memory and swap", memory_details),
+        ("Logical CPUs", lambda: str(os.cpu_count() or "Not reported")),
+        ("Container CPU quota", cpu_quota),
+        ("Container memory limit", memory_limit),
+        ("Running processes", process_count),
+    )),
+    "/network": ("Network", None, (
+        ("Hostname", socket.gethostname),
+        ("Interfaces and addresses", network_interfaces),
+        ("Default route", default_route),
+        ("DNS nameservers", dns_servers),
+        ("Listening sockets", listening_sockets),
+    )),
+    "/services": ("Services", None, (
+        ("System manager state", systemd_state),
+        ("Failed services", failed_services),
+        ("SSH service", lambda: service_state("ssh")),
+        ("Fail2ban service", lambda: service_state("fail2ban")),
+    )),
+    "/security": ("Security", None, (
+        ("Firewall (UFW)", firewall_status),
+        ("Selected SSH settings", ssh_settings),
+        ("SSH service", lambda: service_state("ssh")),
+        ("Listening sockets", listening_sockets),
+    )),
+    "/diagnostics": ("Diagnostics", None, (
+        ("Kernel taint flags (0 = clean)", lambda: open("/proc/sys/kernel/tainted", encoding="ascii").read().strip()),
+        ("Memory and OOM counters", kernel_counters),
+        ("Container OOM events", container_oom_events),
+        ("Recent kernel warnings", kernel_warnings),
+    )),
+}
+
+
+def render_page(path):
+    title, logo, metrics = PAGES[path]
+    logo = logo or DEFAULT_LOGO
+    links = "  |  ".join(
+        f'<a href="{html.escape(url, quote=True)}">{html.escape(page_title)}</a>'
+        for url, (page_title, _, _) in PAGES.items()
+    )
+    rows = []
+    for label, collect in metrics:
+        try:
+            value = str(collect())
+        except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError) as error:
+            LOG.warning("Could not collect %s: %s", label, error)
+            value = "Unavailable (see server log)"
+        rows.append(f"{html.escape(label):<38} {html.escape(value)}")
+    content = "\n".join(rows)
+    if path == "/":
+        content = (
+            "Welcome to the ZedLinux Remote Management Panel.\n"
+            + content
+        )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape(title)} - ZedLinux Remote Management Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&amp;display=swap" rel="stylesheet">
+<style>
+body {{ margin: 0; background: white; color: black; }}
+header {{ background: black; color: white; padding: 18px 24px; display: flex;
+          align-items: baseline; flex-wrap: wrap; gap: 8px 18px; }}
+.brand {{ font: 700 22px Orbitron, sans-serif; }}
+.subtitle {{ font: 16px Arial, sans-serif; }}
+main {{ padding: 20px 24px; overflow-x: auto; }}
+pre {{ margin: 0; font: 14px/1.6 monospace; }}
+.page-title {{ display: flex; align-items: center; gap: 12px; margin: 22px 0 18px; }}
+.page-title h1 {{ margin: 0; font: 400 24px Arial, sans-serif; }}
+.page-icon {{ width: 48px; height: 48px; flex: 0 0 48px; object-fit: contain; }}
+a {{ color: #0000ee; }}
+a:visited {{ color: #551a8b; }}
+</style>
+</head>
+<body>
+<header><span class="brand">ZedLinux</span><span class="subtitle">Remote Management Panel</span></header>
+<main><nav aria-label="Panel pages"><pre>{links}</pre></nav>
+<div class="page-title"><img class="page-icon" src="{html.escape(logo, quote=True)}" alt=""><h1>{html.escape(title)}</h1></div>
+<pre>{content}
+
+<a href="{html.escape(path, quote=True)}">Refresh</a>
+</pre></main>
+</body>
+</html>"""
+
+
+def make_handler(password):
+    expected = f"admin:{password}".encode("utf-8")
+
+    class Handler(BaseHTTPRequestHandler):
+        def setup(self):
+            super().setup()
+            self.connection.settimeout(10)
+
+        def authorized(self):
+            scheme, separator, credentials = self.headers.get("Authorization", "").partition(" ")
+            if not separator or scheme.lower() != "basic":
+                return False
+            try:
+                supplied = base64.b64decode(credentials, validate=True)
+            except (binascii.Error, ValueError):
+                return False
+            return hmac.compare_digest(supplied, expected)
+
+        def respond(self, status, body, challenge=False):
+            data = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
+                "font-src https://fonts.gstatic.com; img-src 'self' https:; "
+                "base-uri 'none'; frame-ancestors 'none'",
+            )
+            if challenge:
+                self.send_header("WWW-Authenticate", 'Basic realm="ZedLinux Panel", charset="UTF-8"')
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(data)
+
+        def do_GET(self):
+            if not self.authorized():
+                self.respond(401, "Authentication required.", challenge=True)
+                return
+            path = urlsplit(self.path).path
+            if path not in PAGES:
+                self.respond(404, "Page not found.")
+                return
+            self.respond(200, render_page(path))
+
+        do_HEAD = do_GET
+
+    return Handler
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8080, help="listen port (default: 8080)")
+    args = parser.parse_args()
+    password = os.environ.get("ZLINUX_PANEL_PASSWORD", "")
+    if not password or ":" in password or any(ord(char) < 32 or ord(char) == 127 for char in password):
+        parser.error("set ZLINUX_PANEL_PASSWORD to a non-empty password without colons or control characters")
+    if not 1 <= args.port <= 65535:
+        parser.error("port must be between 1 and 65535")
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    if args.host not in ("127.0.0.1", "localhost"):
+        LOG.warning("HTTP has no encryption. Use an SSH tunnel or a trusted HTTPS proxy; do not expose this port to the internet.")
+    try:
+        with HTTPServer((args.host, args.port), make_handler(password)) as server:
+            LOG.info("Listening on %s:%s (user: admin)", args.host, args.port)
+            server.serve_forever()
+    except KeyboardInterrupt:
+        LOG.info("Panel stopped.")
+    except OSError as error:
+        LOG.error("Cannot start panel: %s", error)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

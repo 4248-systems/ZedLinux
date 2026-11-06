@@ -33,6 +33,7 @@ toolkit, configuration set, and rebranding on top of a stock Debian base.
 - TigerVNC
 - Remmina remote desktop client
 - Cockpit web admin console
+- Optional read-only ZedLinux remote management panel
 - KVM, QEMU, Virt-Manager, Docker, libvirt
 - MVS TK5 mainframe emulator
 - x3270 / c3270 terminal emulators

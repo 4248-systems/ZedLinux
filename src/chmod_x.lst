@@ -4,6 +4,7 @@
 /usr/sbin/zlinux-health
 /usr/sbin/zlinux-update
 /usr/sbin/zlinux-audit
+/usr/sbin/zlinux-panel
 /usr/lib/ZedLinux/checks/10-platform.sh
 /usr/lib/ZedLinux/checks/20-capacity.sh
 /usr/lib/ZedLinux/checks/30-services.sh
