@@ -56,14 +56,15 @@ toolkit, configuration set, and rebranding on top of a stock Debian base.
 ## Installation
 
 ```bash
-git clone https://github.com/yourname/zedlinux.git
+apt install -y git
+git clone https://github.com/4248-systems/zedlinux.git
 cd zedlinux/src
-sudo bash install.sh
+bash install.sh
 ```
 
 For lazy people here is the one line command
 ```bash
-git clone https://github.com/yourname/zedlinux.git && cd zedlinux/src && sudo bash install.sh && cd ../.. && rm -rf zedlinux
+apt install -y git && git clone https://github.com/4248-systems/zedlinux.git && cd zedlinux/src && sudo bash install.sh && cd ../.. && rm -rf zedlinux
 ```
 
 By default, the installer runs interactively and prompts you for each
