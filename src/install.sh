@@ -189,7 +189,6 @@ install_base_packages() {
         arp-scan netdiscover masscan \
         speedtest-cli \
         jq unzip zip tree ncdu \
-        bind9-dnsutils \
         wireguard-tools \
         network-manager mc sudo
 }
